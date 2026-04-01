@@ -12,7 +12,7 @@ try:
 except:
     API_KEY = "AIzaSyBmxAqsiBQ7AdRpi3OYCFqE9FRVKufm4fk"
 
-MODEL   = "gemini-1.5-flash"   # changed from 2.5-flash (more widely available)
+MODEL   = "gemini-2.0-flash"   # changed from 2.5-flash (more widely available)
 KB_FILE = "Islamic Law of Inheritance.docx"
 
 @st.cache_data
