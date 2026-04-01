@@ -5,12 +5,12 @@ import traceback
 
 # ── Read API key from Streamlit Secrets (more secure & avoids key issues) ────
 # In Streamlit Cloud: go to App Settings → Secrets and add:
-#   GEMINI_API_KEY = "AIzaSyBmxAqsiBQ7AdRpi3OYCFqE9FRVKufm4fk"
+#   API_KEY = st.secrets["GEMINI_API_KEY"]
 # Fallback to hardcoded key if secret not set
 try:
-    API_KEY = st.secrets["GEMINI_API_KEY"]
+    API_KEY = st.secrets["AIzaSyBJXOl1CwAFZl8L95ivGvh6R9azU6y9K38"]
 except:
-    API_KEY = "AIzaSyBmxAqsiBQ7AdRpi3OYCFqE9FRVKufm4fk"
+    API_KEY = "AIzaSyBJXOl1CwAFZl8L95ivGvh6R9azU6y9K38"
 
 MODEL   = "gemini-2.0-flash"   # changed from 2.5-flash (more widely available)
 KB_FILE = "Islamic Law of Inheritance.docx"
