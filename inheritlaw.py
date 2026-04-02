@@ -22,7 +22,7 @@ from google.genai import errors as genai_errors
 #   4. Copy the URL from your browser address bar
 # ══════════════════════════════════════════════════════════════════════════════
 
-DOCX_GITHUB_URL = "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/Islamic%20Law%20of%20Inheritance.docx"
+DOCX_GITHUB_URL = "https://raw.githubusercontent.com/usthadseera-svg/inherit/main/Islamic%20Law%20of%20Inheritance.docx"
 
 MODELS      = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.5-pro"]
 MAX_RETRIES = 3
