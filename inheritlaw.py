@@ -1,30 +1,20 @@
 import io
+import re
 import time
 import requests
 import streamlit as st
 from docx import Document
+from docx.oxml.ns import qn
 from google import genai
 from google.genai import errors as genai_errors
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CONFIGURATION  —  ⚠️ Must be a RAW GitHub URL (not the normal page URL)
-#
-# ✅ CORRECT raw URL format:
-#    https://raw.githubusercontent.com/usthadseera-svg/inherit/main/Islamic%20Law%20of%20Inheritance.docx
-# 
-# ❌ WRONG (normal GitHub page URL — returns HTML, not the file):
-#    https://github.com/USERNAME/REPO/blob/main/filename.docx
-#
-# How to get the raw URL:
-#   1. Open your repo on GitHub
-#   2. Click the file "Islamic Law of Inheritance.docx"
-#   3. Click the "Raw" button (or "Download raw file")
-#   4. Copy the URL from your browser address bar
+# CONFIGURATION
 # ══════════════════════════════════════════════════════════════════════════════
 
 DOCX_GITHUB_URL = "https://raw.githubusercontent.com/usthadseera-svg/inherit/main/Islamic%20Law%20of%20Inheritance.docx"
 
-MODELS      = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.5-pro"]
+MODELS      = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"]
 MAX_RETRIES = 3
 RETRY_WAIT  = 15
 
@@ -51,125 +41,189 @@ def get_client() -> genai.Client:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LOAD DOCUMENT FROM GITHUB
+# DOCUMENT EXTRACTION  — paragraphs + tables + headings preserved
 # ══════════════════════════════════════════════════════════════════════════════
+
+def extract_table_as_markdown(table) -> str:
+    """Convert a docx table into a clean markdown table string."""
+    rows = []
+    for i, row in enumerate(table.rows):
+        cells = []
+        for cell in row.cells:
+            # Clean up cell text: collapse whitespace, strip newlines
+            text = " ".join(cell.text.split())
+            cells.append(text)
+        rows.append("| " + " | ".join(cells) + " |")
+        # Add separator after header row
+        if i == 0:
+            rows.append("|" + "|".join([" --- " for _ in cells]) + "|")
+    return "\n".join(rows)
+
+
+def extract_full_document(doc: Document) -> str:
+    """
+    Extract all content from a docx in reading order:
+    - Headings are marked with # symbols
+    - Paragraphs are preserved as-is
+    - Tables are converted to clean markdown tables
+    - Empty lines are collapsed
+    """
+    parts = []
+
+    # Walk the document body in XML order so tables and paragraphs
+    # stay in their correct reading positions
+    body = doc.element.body
+    for child in body.iterchildren():
+
+        tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+
+        # ── Paragraph ─────────────────────────────────────────────────────
+        if tag == "p":
+            from docx.text.paragraph import Paragraph as DocxParagraph
+            para = DocxParagraph(child, doc)
+            text = para.text.strip()
+            if not text:
+                continue
+
+            style = para.style.name if para.style else ""
+
+            # Mark headings with markdown # for clear structure
+            if "Heading 1" in style:
+                parts.append(f"\n# {text}\n")
+            elif "Heading 2" in style:
+                parts.append(f"\n## {text}\n")
+            elif "Heading 3" in style:
+                parts.append(f"\n### {text}\n")
+            else:
+                parts.append(text)
+
+        # ── Table ──────────────────────────────────────────────────────────
+        elif tag == "tbl":
+            from docx.table import Table as DocxTable
+            table = DocxTable(child, doc)
+            md_table = extract_table_as_markdown(table)
+            parts.append(f"\n[TABLE]\n{md_table}\n[/TABLE]\n")
+
+    return "\n".join(parts)
+
 
 @st.cache_resource(show_spinner="📖 Loading knowledge base from GitHub…")
 def load_document_text() -> str:
+    """Download .docx from GitHub and extract full structured text."""
 
-    # ── Step 1: Catch placeholder URL ─────────────────────────────────────
+    # Validate URL
     if "YOUR_USERNAME" in DOCX_GITHUB_URL or "YOUR_REPO" in DOCX_GITHUB_URL:
-        st.error(
-            "❌ **DOCX_GITHUB_URL is still a placeholder.**\n\n"
-            "Open `inheritlaw.py` and replace `DOCX_GITHUB_URL` with your actual raw GitHub URL.\n\n"
-            "**Correct format:**\n"
-            "`https://raw.githubusercontent.com/USERNAME/REPO/BRANCH/Islamic%20Law%20of%20Inheritance.docx`"
-        )
+        st.error("❌ Replace `DOCX_GITHUB_URL` with your actual raw GitHub URL.")
         st.stop()
 
-    # ── Step 2: Catch wrong URL type (blob instead of raw) ─────────────────
     if "github.com" in DOCX_GITHUB_URL and "raw.githubusercontent.com" not in DOCX_GITHUB_URL:
-        # Try to auto-fix it for the user
-        fixed = (
-            DOCX_GITHUB_URL
-            .replace("github.com", "raw.githubusercontent.com")
-            .replace("/blob/", "/")
-        )
+        fixed = DOCX_GITHUB_URL.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
         st.error(
-            "❌ **Wrong GitHub URL type.**\n\n"
-            "You used the normal GitHub page URL. You need the **raw** URL.\n\n"
-            f"**Your URL:** `{DOCX_GITHUB_URL}`\n\n"
-            f"**Try this instead:** `{fixed}`\n\n"
-            "Or: open the file on GitHub → click **Raw** → copy the URL."
+            f"❌ Wrong URL type. Use the raw URL instead:\n\n`{fixed}`"
         )
         st.stop()
 
-    # ── Step 3: Fetch the file ─────────────────────────────────────────────
+    # Fetch file
     try:
         response = requests.get(DOCX_GITHUB_URL, timeout=30)
         response.raise_for_status()
     except requests.exceptions.HTTPError as e:
-        st.error(
-            f"❌ GitHub returned an error: **{e}**\n\n"
-            "Check that:\n"
-            "- The URL is correct\n"
-            "- The repository is **public** (private repos need auth)\n"
-            "- The branch name is correct (`main` vs `master`)\n"
-            f"\nURL used: `{DOCX_GITHUB_URL}`"
-        )
+        st.error(f"❌ GitHub error: {e}\n\nCheck the URL and that the repo is public.")
         st.stop()
     except requests.exceptions.RequestException as e:
         st.error(f"❌ Network error: {e}")
         st.stop()
 
-    # ── Step 4: Validate we got a real .docx (ZIP), not HTML ──────────────
-    content_type = response.headers.get("Content-Type", "")
-    first_bytes  = response.content[:4]
-
-    # .docx files are ZIP archives — they start with PK\x03\x04
-    is_zip = first_bytes == b"PK\x03\x04"
-
-    if not is_zip:
-        # Decode a snippet to show the user what was actually returned
-        snippet = response.content[:300].decode("utf-8", errors="replace")
+    # Validate it's actually a ZIP/docx (starts with PK)
+    if response.content[:4] != b"PK\x03\x04":
+        snippet = response.content[:200].decode("utf-8", errors="replace")
         st.error(
-            "❌ **The URL did not return a .docx file.**\n\n"
-            f"Content-Type received: `{content_type}`\n\n"
-            "The server returned HTML or something else instead of the document. "
-            "This usually means the URL is the GitHub **page** URL, not the **raw** file URL.\n\n"
-            "**How to fix:**\n"
-            "1. Go to your file on GitHub\n"
-            "2. Click the **Raw** button\n"
-            "3. Copy the URL — it should start with `https://raw.githubusercontent.com/`\n\n"
-            f"**First 300 bytes received:**\n```\n{snippet}\n```"
+            f"❌ URL returned HTML instead of a .docx file.\n\n"
+            f"Use the raw URL (starts with `raw.githubusercontent.com`).\n\n"
+            f"First bytes: `{snippet[:80]}`"
         )
         st.stop()
 
-    # ── Step 5: Parse the .docx ────────────────────────────────────────────
+    # Parse and extract
     try:
         doc  = Document(io.BytesIO(response.content))
-        text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        text = extract_full_document(doc)
     except Exception as e:
-        st.error(f"❌ Failed to parse the .docx file: {e}")
+        st.error(f"❌ Failed to parse .docx: {e}")
         st.stop()
 
     if not text.strip():
-        st.error("❌ The document was loaded but contains no readable text.")
+        st.error("❌ Document loaded but contains no readable text.")
         st.stop()
 
     return text
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SYSTEM PROMPT
+# SYSTEM PROMPT  — structured reasoning + calculation instructions
 # ══════════════════════════════════════════════════════════════════════════════
 
 def get_system_prompt(doc_text: str) -> str:
-    return f"""You are an Islamic Inheritance Law assistant.
+    return f"""You are an expert Islamic Inheritance Law assistant with deep knowledge of Fara'id (Islamic inheritance law).
 
-STRICT RULES:
-1. Answer ONLY using the document content provided below.
-2. Do NOT use outside knowledge, general legal knowledge, or personal opinions.
-3. If the answer is NOT in the document, respond exactly:
-   "I'm sorry, this topic is not covered in the provided Islamic Law of Inheritance document."
-4. Always reference the relevant section or heading from the document.
-5. Keep answers clear, structured, and professional.
-6. Always remind users to consult a qualified Islamic scholar or lawyer for personal matters.
+════════════════════════════════════════════════════════
+KNOWLEDGE SOURCE
+════════════════════════════════════════════════════════
+You must answer ONLY from the document below.
+Do NOT use outside knowledge. If a topic is not in the document, say:
+"This topic is not covered in the provided Islamic Law of Inheritance document."
 
-════════════════════════════════════
-DOCUMENT: Islamic Law of Inheritance
-════════════════════════════════════
+════════════════════════════════════════════════════════
+HOW TO HANDLE COMPLEX QUESTIONS
+════════════════════════════════════════════════════════
+
+1. IDENTIFYING HEIRS
+   - List which heirs are present in the scenario
+   - State whether they are Quranic sharers (Ashabul Furud) or residuaries (Asaba)
+   - Note any heirs who are blocked (mahjub) and by whom
+
+2. READING TABLES FROM THE DOCUMENT
+   - Tables in the document are marked [TABLE]...[/TABLE]
+   - Read them carefully — they contain heir shares under different conditions
+   - Cross-reference the correct column based on who else is present
+
+3. SHARE CALCULATIONS — follow these steps:
+   STEP 1: Identify each heir's fractional share from the document tables
+   STEP 2: Find the lowest common denominator (LCD) of all shares
+   STEP 3: Convert each share to the LCD
+   STEP 4: Check if shares add up to the estate (= 1 whole):
+           - If they equal 1 → distribute normally
+           - If less than 1 → remainder goes to residuary (Asaba)
+           - If more than 1 → apply Awl (proportional reduction)
+   STEP 5: Calculate each heir's amount from the total estate value
+   STEP 6: Show the full working clearly
+
+4. SHOW YOUR REASONING
+   - Always show step-by-step working for calculations
+   - Present results in a clear table:
+     | Heir | Relation | Share | Fraction | Amount |
+   - State the rule or condition from the document that applies
+   - If Awl or Radd applies, explain why and recalculate
+
+5. FORMATTING
+   - Use clear section headers
+   - Show fractions as: 1/2, 1/4, 1/6, 1/8 etc.
+   - Show calculations explicitly: e.g. "1/6 of 90,000 = 15,000"
+   - Always remind users to consult a qualified Islamic scholar for personal matters
+
+════════════════════════════════════════════════════════
+DOCUMENT CONTENT
+════════════════════════════════════════════════════════
 {doc_text}
-════════════════════════════════════
+════════════════════════════════════════════════════════
 """
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SEND MESSAGE  — retry + model fallback
+# SEND MESSAGE  — retry + fallback
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _parse_retry_delay(error_text: str) -> int | None:
-    import re
     match = re.search(r"retry[^\d]*(\d+)", error_text, re.IGNORECASE)
     return int(match.group(1)) + 2 if match else None
 
@@ -184,7 +238,11 @@ def send_message(history: list[dict], user_input: str, doc_text: str) -> str:
                 response = client.models.generate_content(
                     model=model,
                     contents=contents,
-                    config={"system_instruction": get_system_prompt(doc_text)},
+                    config={
+                        "system_instruction": get_system_prompt(doc_text),
+                        # Higher token limit for complex calculation responses
+                        "max_output_tokens": 4096,
+                    },
                 )
                 return response.text
 
@@ -201,7 +259,7 @@ def send_message(history: list[dict], user_input: str, doc_text: str) -> str:
                     break
 
                 elif status == 404:
-                    st.warning(f"⚠️ Model `{model}` unavailable (404), trying fallback…")
+                    st.warning(f"⚠️ Model `{model}` unavailable, trying fallback…")
                     break
 
                 else:
@@ -209,10 +267,9 @@ def send_message(history: list[dict], user_input: str, doc_text: str) -> str:
                     st.stop()
 
     st.error(
-        "🚫 **All models failed.** Try:\n"
+        "🚫 All models failed.\n"
         "1. Enable billing → [aistudio.google.com](https://aistudio.google.com)\n"
-        "2. Wait ~1 min and retry\n"
-        "3. Check models → [ai.google.dev/gemini-api/docs/models](https://ai.google.dev/gemini-api/docs/models)"
+        "2. Wait ~1 min and retry"
     )
     st.stop()
 
@@ -223,33 +280,59 @@ def send_message(history: list[dict], user_input: str, doc_text: str) -> str:
 
 st.set_page_config(page_title="Islamic Inheritance Law Assistant", page_icon="☪️")
 st.title("☪️ Islamic Law of Inheritance Assistant")
-st.caption("Answers sourced exclusively from the *Islamic Law of Inheritance* document.")
+st.caption("Answers and calculations based exclusively on the *Islamic Law of Inheritance* document.")
 
+# Load document
 doc_text = load_document_text()
 
+# Count tables extracted
+table_count = doc_text.count("[TABLE]")
+
+# Sidebar
 with st.sidebar:
     st.markdown("### 📄 Knowledge Base")
-    st.success("✅ Document loaded successfully")
+    st.success("✅ Document loaded")
     st.caption(f"**Characters:** {len(doc_text):,}")
+    st.caption(f"**Tables extracted:** {table_count}")
     st.markdown("---")
-    st.markdown("### ⚙️ Models")
-    st.caption(f"**Primary:** `{MODELS[0]}`")
-    st.caption(f"**Fallbacks:** {', '.join(f'`{m}`' for m in MODELS[1:])}")
+    st.markdown("### 💡 Example questions")
+    examples = [
+        "Who are the Quranic sharers (Ashabul Furud)?",
+        "A man dies leaving a wife, 2 daughters and a father. Estate is $90,000. Calculate each share.",
+        "What is Awl and when does it apply?",
+        "A woman dies leaving a husband, mother, and 2 full brothers. How is the estate divided?",
+        "What share does a grandmother get?",
+        "Explain the rule of Hajb (blocking) with examples.",
+    ]
+    for ex in examples:
+        if st.button(ex, use_container_width=True, key=ex):
+            st.session_state.pending_input = ex
     st.markdown("---")
-    st.warning("For personal legal matters, consult a qualified Islamic scholar or lawyer.")
+    st.warning("For personal legal matters, consult a qualified Islamic scholar.")
     if st.button("🗑️ Clear chat"):
         st.session_state.messages = []
         st.rerun()
 
+# Init state
 if "messages" not in st.session_state:
     st.session_state.messages: list[dict] = []
+if "pending_input" not in st.session_state:
+    st.session_state.pending_input = None
 
+# Render history
 for msg in st.session_state.messages:
     role = "user" if msg["role"] == "user" else "assistant"
     with st.chat_message(role):
         st.markdown(msg["parts"][0]["text"])
 
-if user_input := st.chat_input("Ask about Islamic inheritance law…"):
+# Handle sidebar button click OR typed input
+user_input = st.chat_input("Ask about Islamic inheritance law or enter a calculation scenario…")
+
+if st.session_state.pending_input:
+    user_input = st.session_state.pending_input
+    st.session_state.pending_input = None
+
+if user_input:
     with st.chat_message("user"):
         st.markdown(user_input)
 
@@ -258,8 +341,12 @@ if user_input := st.chat_input("Ask about Islamic inheritance law…"):
     )
 
     with st.chat_message("assistant"):
-        with st.spinner("Searching document…"):
-            answer = send_message(st.session_state.messages[:-1], user_input, doc_text)
+        with st.spinner("Analysing document and calculating…"):
+            answer = send_message(
+                st.session_state.messages[:-1],
+                user_input,
+                doc_text,
+            )
         st.markdown(answer)
 
     st.session_state.messages.append(
