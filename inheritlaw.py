@@ -10,7 +10,7 @@ from google.genai import errors as genai_errors
 # CONFIGURATION  —  ⚠️ Must be a RAW GitHub URL (not the normal page URL)
 #
 # ✅ CORRECT raw URL format:
-#    https://raw.githubusercontent.com/usthadseera-svg//inherit/main/Islamic%20Law%20of%20Inheritance.docx
+#    https://raw.githubusercontent.com/usthadseera-svg/inherit/main/Islamic%20Law%20of%20Inheritance.docx
 # 
 # ❌ WRONG (normal GitHub page URL — returns HTML, not the file):
 #    https://github.com/USERNAME/REPO/blob/main/filename.docx
