@@ -209,7 +209,7 @@ HOW TO HANDLE COMPLEX QUESTIONS
    - Use clear section headers
    - Show fractions as: 1/2, 1/4, 1/6, 1/8 etc.
    - Show calculations explicitly: e.g. "1/6 of 90,000 = 15,000"
-   - Always remind users to consult a qualified Islamic scholar for personal matters
+   
 
 ════════════════════════════════════════════════════════
 DOCUMENT CONTENT
@@ -278,7 +278,7 @@ def send_message(history: list[dict], user_input: str, doc_text: str) -> str:
 # STREAMLIT UI
 # ══════════════════════════════════════════════════════════════════════════════
 
-st.set_page_config(page_title="Islamic Inheritance Law Assistant", page_icon="☪️")
+st.set_page_config(page_title=" MISHKATH Islamic Inheritance Law Assistant", page_icon="☪️")
 st.title("☪️ Islamic Law of Inheritance Assistant")
 st.caption("Answers and calculations based exclusively on the *Islamic Law of Inheritance* document.")
 
